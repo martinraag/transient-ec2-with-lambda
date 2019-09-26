@@ -1,0 +1,8 @@
+packaged-template.yaml
+
+.env
+
+__pycache__
+*.egg-info
+
+.DS_Store
