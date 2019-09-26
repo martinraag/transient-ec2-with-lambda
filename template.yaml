@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: "AWS::Serverless-2016-10-31"
+
+Description: Example project to illustrate running transient EC2 instances with Lambda.
+
+Parameters:
+  InstanceTypeParam:
+    Type: String
+    Default: t2.micro
+    Description: EC2 instance type
+
+  ImageIdParam:
+    Type: String
+    Description: EC2 AMI ID
+
+  DurationParam:
+    Type: Number
+    Default: 300
+
+Resources:
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-results"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+  JobInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: ec2.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: JobInstanceWriteToBucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:putObject
+                Resource: !Sub "arn:aws:s3:::${ResultsBucket}/*"
+
+  JobInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref JobInstanceRole
+
+  ProvisionFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Path: "/"
+      Policies:
+        - PolicyName: ProvisionFunctionRunInstances
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - ec2:GetConsole*
+                Resource: "*"
+              - Effect: Allow
+                Action: ec2:AssociateIamInstanceProfile
+                Resource: arn:aws:ec2:region:account:instance/*
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt JobInstanceRole.Arn
+              - Effect: Allow
+                Action: ec2:RunInstances
+                Resource:
+                  - !Sub "arn:aws:ec2:${AWS::Region}::image/${ImageIdParam}"
+                  - arn:aws:ec2:*:*:network-interface/*
+                  - arn:aws:ec2:*:*:instance/*
+                  - arn:aws:ec2:*:*:subnet/*
+                  - arn:aws:ec2:*:*:volume/*
+                  - arn:aws:ec2:*:*:key-pair/*
+                  - arn:aws:ec2:*:*:security-group/*
+
+  ProvisionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: provision.handler
+      Runtime: python3.7
+      CodeUri: ./lambdas
+      Timeout: 300
+      Role: !GetAtt ProvisionFunctionRole.Arn
+      Environment:
+        Variables:
+          BUCKET: !Ref ResultsBucket
+          DURATION: !Ref DurationParam
+          IMAGE_ID: !Ref ImageIdParam
+          INSTANCE_TYPE: !Ref InstanceTypeParam
+          INSTANCE_PROFILE: !GetAtt JobInstanceProfile.Arn
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 23 * * ? *)
